@@ -1,0 +1,8 @@
+*.safetensors filter=lfs diff=lfs merge=lfs -text
+*.pt filter=lfs diff=lfs merge=lfs -text
+*.bin filter=lfs diff=lfs merge=lfs -text
+*.gguf filter=lfs diff=lfs merge=lfs -text
+*.jsonl filter=lfs diff=lfs merge=lfs -text
+*.json filter=lfs diff=lfs merge=lfs -text
+data/datasets/*.jsonl filter=lfs diff=lfs merge=lfs -text
+data/training_data/stage1_large/*.jsonl filter=lfs diff=lfs merge=lfs -text

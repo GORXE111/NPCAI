@@ -1,0 +1,31 @@
+# Unity
+unity/Library/
+unity/Temp/
+unity/Logs/
+unity/UserSettings/
+unity/obj/
+unity/*.csproj
+unity/*.sln
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Large model files (keep in LFS or download separately)
+*.gguf
+*.bin
+*.safetensors
+
+# HuggingFace cache
+.cache/
+
+# Datasets raw downloads (reproducible via scripts)
+data/datasets/
