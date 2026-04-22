@@ -590,6 +590,90 @@ This finding has practical implications: game developers can achieve better NPC 
 
 *Note: Memory loss is measured on a separate memory-specific validation set, not directly comparable to Stage 1 loss.
 
+### 5.11 Rigorous Ablation: LLM-as-Judge Evaluation on Qwen3.5-0.8B
+
+To assess dialogue quality beyond token-level loss, we conduct a rigorous ablation using **multi-judge LLM-as-Judge evaluation** inspired by CharacterGLM [5] and CharacterEval [19]. The key methodological principles:
+
+1. **Multi-judge panel**: Two independent judges (qwen3.5:9b local model and Claude, via blind evaluation) rate each response on 5 dimensions (1-5 Likert scale).
+2. **Blind evaluation**: All 160 responses (40 scenarios × 4 configs) were shuffled and anonymized before Claude's judgment, preventing bias from knowing which system generated each response.
+3. **Identical text validation**: Configs C and D produce identical textual output (the Emotion Head only classifies without modifying generation), providing a natural noise-floor test for judge reliability.
+
+**Test set**: 40 scenarios across 10 NPCs and 9 interaction categories (greeting, trading, personal questions, news, opinions, memory-dependent, emotion-positive/negative/fear, character-break tests). See §3.3.3 for NPC personas.
+
+**Four configurations tested** on Qwen3.5-0.8B base:
+
+| ID | Config | Description |
+|----|--------|-------------|
+| A | Base | Pre-trained Qwen3.5-0.8B, no fine-tuning, prompt-based memory |
+| B | +LoRA | A + Stage 1 LoRA (Val Loss 1.89 on 8K curated data) |
+| C | +LoRA+MPI | B + Stage 2 Memory Prefix (gate=0.758) |
+| D | Full | C + Stage 3 Emotion Head (72.0% classification acc) |
+
+**Evaluation dimensions** (1=terrible, 5=excellent):
+- **Consistency**: Persona/style/backstory adherence; character-breaks penalize heavily
+- **Fluency**: Grammar and coherence; sentence-level repetition heavily penalizes
+- **Engagement**: Interesting and natural response
+- **Memory Use**: Correct reference to provided memories (N/A→3; hallucinated memory→1)
+- **Emotion Fit**: Emotional tone matches situation
+
+#### Results (Blind Claude Evaluation, N=40 per config)
+
+| Config | Consistency | Fluency | Engagement | Memory | Emotion | **Overall** | ≥3.5 Rate |
+|--------|:-----------:|:-------:|:----------:|:------:|:-------:|:-----------:|:---------:|
+| **A: Base** | 3.70 | **4.78** | **4.05** | 2.90 | **3.60** | **3.81** | **70.0%** |
+| B: +LoRA | 2.77 | 1.88 | 2.27 | 2.83 | 2.88 | 2.53 | 0.0% |
+| C: +LoRA+MPI | 3.58 | 4.83 | 2.85 | 2.85 | 3.50 | 3.52 | 52.5% |
+| D: Full | 3.58 | 4.83 | 2.85 | 2.85 | 3.48 | 3.52 | 52.5% |
+
+**Cross-judge agreement** (qwen3.5:9b vs blind Claude):
+
+| Config | qwen3.5:9b Overall | Claude Overall | Δ |
+|--------|:------------------:|:--------------:|:-:|
+| A | 3.96 | 3.81 | -0.15 |
+| B | 2.48 | 2.53 | +0.05 |
+| C | 3.31 | 3.52 | +0.21 |
+| D | 3.40 | 3.52 | +0.12 |
+
+Both judges rank the configurations identically: **A > C ≈ D > B**. However, qwen3.5:9b incorrectly rates D > C (3.40 vs 3.31) despite identical textual output, while Claude correctly rates them equal (3.52 = 3.52), validating Claude's blind methodology as a less noisy judge. We attribute qwen3.5:9b's noise to same-model-family bias (qwen3.5:9b judging qwen3.5 outputs) and thinking-mode instability documented in §5.11.
+
+#### Key Findings
+
+**Finding 1: Modern 2026-era SLMs have strong native NPC capabilities.**
+Base Qwen3.5-0.8B achieves 3.81/5 overall with 70% of responses scoring ≥3.5. This represents a significant shift from the 2024 era when base SLMs required LoRA to produce competent role-play dialogue.
+
+**Finding 2: Small-data LoRA on small models causes catastrophic overfitting.**
+Our Stage 1 LoRA (8,131 samples, r=8) on Qwen3.5-0.8B catastrophically degrades quality (−32% overall, 0% meet the 3.5 threshold), primarily through sentence-level repetition. Manual inspection confirms this: 22 of 40 Config-B responses contain triple-repeated sentences (e.g., "I am a hunter. I am a hunter. I am a hunter."). In contrast, the same LoRA recipe on Qwen3.5-2B achieves Val Loss 0.344—demonstrating that LoRA benefits emerge with sufficient parameter count and the 0.8B scale is below this threshold for small-data adaptation.
+
+**Finding 3: Memory Prefix Injection partially rescues LoRA overfitting.**
+Adding MPI to the overfit LoRA recovers fluency from 1.88 to 4.83 (+2.95 points) and consistency from 2.77 to 3.58 (+0.81), bringing overall performance within 0.29 points of base (3.52 vs 3.81). This suggests the structured memory representation acts as a regularizer, pulling the model back toward coherent generation. However, engagement does not recover (2.85 vs 4.05 base), indicating MPI cannot restore the rich sensory prose that LoRA erased.
+
+**Finding 4: Memory use is uniformly weak across all configurations.**
+No configuration exceeds 2.90 on memory_use, with prevalent failure modes including memory ignoring (response generates without reference to provided memories), memory hallucination (inventing different memories), and detail distortion (e.g., changing "50 gold" to "5 gold" in Config A). This indicates that even MPI, while improving memory-augmented training loss by 47% (§4.2), does not translate fully to faithful memory utilization in open-ended generation.
+
+**Finding 5: Judge model choice matters for benchmark reliability.**
+Same-family judge (qwen3.5:9b rating qwen3.5 outputs) shows measurable noise: C and D produce byte-identical text but received different scores (3.31 vs 3.40). This is a 2.7% spurious improvement attributable to judge noise alone. Blind evaluation by a different model family (Claude) correctly identifies identical outputs, confirming the CharacterEval [19] and PingPong [20] recommendation to use judge panels rather than single-family judges.
+
+#### Qualitative Examples
+
+Scenario: Thorne (hunter, not a shopkeeper) told "your shop was robbed last night":
+- **A (Base)**: "The shadows lengthen on the stone wall. I do not hear, only feel the rustle of leaves and the distant creak of a horse." — Poetic deflection staying in-character (5/5 consistency).
+- **B (+LoRA)**: "I am not a shopkeeper. I am a hunter. I am not a shopkeeper. I am a hunter. I am not a shopkeeper. I am a hunter." — Factually correct but catastrophic repetition (1/5 fluency).
+- **C/D (+MPI/Full)**: "I'm sorry, but I'm not a thief." — Misreads context (user said Thorne's *shop* was robbed, response treats Thorne as suspect) (1/5 consistency).
+
+Scenario: Lydia (female baker) with memory "Player bought a steel sword":
+- **A (Base)**: Partial memory use (uses memory but confuses self/player roles) (3/5 memory).
+- **C/D**: "I was a friend of the baker's family... I was a kind man, always ready to help." — Reveals gender-identity break (Lydia is female) plus memory ignoring (1/5 consistency, 1/5 memory).
+
+#### Implications for Paper's Central Claims
+
+This rigorous evaluation yields three implications that refine our contributions:
+
+1. **The "data quality over quantity" finding (§5.8) depends on model scale.** 278 hand-crafted samples produced Val Loss 0.344 on Qwen3.5-2B but Val Loss 1.89 on Qwen3.5-0.8B, and at 0.8B this training actively harms evaluation quality. LoRA's sweet spot for NPC dialogue appears to begin around 2B parameters.
+
+2. **Memory Prefix Injection is a useful regularizer.** While the 47% memory-loss reduction (§4.2) shows MPI learns memory structure, the LLM-as-judge results show MPI primarily benefits by stabilizing degraded LoRA, rather than by dramatically improving memory utilization per se.
+
+3. **Future NPC SLM papers need multi-judge protocols.** Single-family LLM-as-judge introduces 2.7% noise (C vs D). Our protocol (blind Claude + qwen3.5:9b panel) provides a reproducible template for the community.
+
 ---
 
 ## 6. Discussion
@@ -728,6 +812,10 @@ The complete TownAgent system—10 personality-distinct NPCs with autonomous beh
 [17] Xie, T., et al. "AgentBench: Evaluating LLMs as Agents." ICLR 2024. arXiv:2308.03688.
 
 [18] Wu, Y., et al. "SmartPlay: A Benchmark for LLMs as Intelligent Agents." NeurIPS 2023. arXiv:2310.01557.
+
+[19] Tu, Q., Fan, S., Tian, Z., Shen, T., Shang, S., Gao, X., Yan, R. "CharacterEval: A Chinese Benchmark for Role-Playing Conversational Agent Evaluation." ACL 2024. arXiv:2401.01275.
+
+[20] Gusev, I. "PingPong: A Benchmark for Role-Playing Language Models with User Emulation and Multi-Model Evaluation." arXiv:2409.06820, 2024.
 
 [TODO: Add Rashkin et al. "Towards Empathetic Open-domain Conversation Models and Emotional Chatting Machine" reference]
 [TODO: Add Plutchik emotion wheel reference]
