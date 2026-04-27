@@ -145,3 +145,45 @@ v2 方向（工具调用 NPC）确立后，需要选具体角色作为论文 dem
 - `~/npcllm/data_kim/kim_train.jsonl` (1587)
 - `~/npcllm/data_kim/kim_valid.jsonl` (80)
 - 训练脚本 `~/npcllm/model/train_kim_lora.py` 启动中（PID 66280）
+
+---
+
+## 2026-04-27 / Stage 1 Kim LoRA 完成
+
+### 背景
+按 v3 计划 Stage 1 持久 SFT 训 Kim 人设。用之前 v2 学到的保守超参（LR 5e-5, dropout 0.15, r=16, weight_decay 0.05, 4 epochs + early-stop patience 2）。
+
+### 发现
+**最终 Best Val Loss: 1.0858**（4 个 epoch 持续下降）
+
+| Epoch | Train | Val |
+|-------|------|-----|
+| 1 | 1.6493 | 1.2208 |
+| 2 | 1.1258 | 1.1517 |
+| 3 | 1.0605 | 1.1151 |
+| 4 | 1.0138 | **1.0858** ← Best |
+
+### 假设 vs 现实
+- **假设**: 1,587 条 DE 数据可能太少，Val Loss 难降下来
+- **现实**: 比 8K curated（v2 Val 1.94）好 42%，比 v1 的 1.89 好 43%
+
+### 影响
+1. **再次验证"质量胜过数量"** —— 从 v2 知识扩展到 v3 真实数据
+2. **0.8B SFT 不是过不了的坎**，问题在于数据质量 + 超参组合
+3. **保守超参完全有效**: LR 5e-5 + dropout 0.15 + r=16 + early stop 是 0.8B SFT 标准配置
+
+### 技术细节
+- LoRA size: 4.3MB（adapter_model.safetensors）
+- 训练时长: ~75 分钟 on M4 16GB
+- 内存峰值: 6.4% (~1GB)，无 swap
+- CPU: ~50% （MPS 主算）
+- 完成时间: 2026-04-27 19:02
+
+### 已交付物
+- ✅ `kim-q35-08b-stage1.lora` 4.3MB → 已拷贝到 `D:/AIproject/NPCAI/checkpoints/kim_q35_08b/`
+- ✅ Best Val 1.0858
+
+### 下次注意
+1. **0.8B + 保守超参 + 1-2K 高质量数据 = OK 的 SFT 配方**，可推广到其他角色
+2. Stage 2 数据要保持类似规模和质量等级，不要又跑去 10K+
+3. Phase 1 闭环 demo 现在可以启动（有 LoRA 了，剩 Unity 端 demo 资源）
