@@ -94,3 +94,54 @@
 ## 后续更新
 
 每次方向变更或重大发现，在下面追加新的复盘段落，保留时间戳。不要覆盖历史。
+
+---
+
+## 2026-04-24 / 角色锚定：Kim Kitsuragi
+
+### 背景
+v2 方向（工具调用 NPC）确立后，需要选具体角色作为论文 demo 主角和训练目标。
+
+### 调研发现
+两轮 web 搜索找出候选：
+- **Honkai Star Rail** (185K 条 + 原生动作标签) — 数据最强
+- **NieR Pod 042** (30K, 字面"工具调用 NPC") — 叙事最匹配
+- **Kim Kitsuragi** (DE, 6.4K) — 叙事清晰 + 学界先例
+- **Mantella Skyrim pipeline** (MIT, 8.8K + 可再生) — 授权最干净
+- **Serana** (Skyrim, 1.96K) — 备选
+
+### 假设 vs 现实
+- **假设**: HSR 数据最大 + 标签最全 = 首选
+- **现实**: HoYoverse 在 2024.10 对 Dimbreath repo 提 DMCA。HF 镜像目前活着但可能随时被清。**论文可复现性致命受损**。
+
+### 决策
+最终选 **Kim Kitsuragi (Disco Elysium)**。
+
+理由：
+1. **授权最安全**: ZA/UM 历史宽松，HF 数据集稳定
+2. **叙事最清晰**: DE 24 个内心技能 = 工具调用的天然类比，论文有现成框架
+3. **学术先例**: EMNLP 2023 Akoury et al. 已用 DE 做 corpus
+4. **数据格式直接对口**: `output.json` 含 `[Action/Check: ...]` 标签，就是工具调用
+5. **角色辨识度极高**: 现代游戏最独特 NPC 声音之一（即使审稿人没玩过，"clinical detective" 也好理解）
+
+### 数据现状
+- `allura-org/disco-elysium-conversations-raw/output.json`: 1,742 conversations，含动作标签
+- `main-horse/disco-elysium-utterances`: 6,438 Kim 单条台词（无上下文）
+- 提取后 SFT 训练样本: **1,587 train + 80 val**（按 Kim 出现的对话过滤）
+
+### 影响
+1. **Unity 端**: 重构为 DE 风格 galgame（油画背景 + 立绘 + 24 技能 UI 组件）
+2. **训练数据**: Kim 1,587 SFT samples + 后续从 conversations 提取 action 调用
+3. **Tool 体系**: 借鉴 DE 24 技能 + 我们扩展的 galgame 工具（show_cg / play_bgm / present_choices）
+4. **论文叙事**: "Skill-as-Tool: Grounding SLMs in In-Character Decision Tools using Disco Elysium's Kim Kitsuragi"
+
+### 下次注意
+1. **任何依赖动漫/游戏数据的方向**先查发行商法律姿态（搜 DMCA 历史）
+2. **HF 镜像不算永久存档** — 关键数据集要本地备份
+3. **数据量不是单一标准** — 1.6K with 上下文 > 6K without 上下文（for SFT）
+4. **DE 的 `[Action/Check: ...]` 是免费的工具调用监督信号**，下一阶段必用
+
+### 已上传到 Mac
+- `~/npcllm/data_kim/kim_train.jsonl` (1587)
+- `~/npcllm/data_kim/kim_valid.jsonl` (80)
+- 训练脚本 `~/npcllm/model/train_kim_lora.py` 启动中（PID 66280）
