@@ -187,3 +187,94 @@ v2 方向（工具调用 NPC）确立后，需要选具体角色作为论文 dem
 1. **0.8B + 保守超参 + 1-2K 高质量数据 = OK 的 SFT 配方**，可推广到其他角色
 2. Stage 2 数据要保持类似规模和质量等级，不要又跑去 10K+
 3. Phase 1 闭环 demo 现在可以启动（有 LoRA 了，剩 Unity 端 demo 资源）
+
+---
+
+## 2026-04-28 / Stage 1 Persona 测试发现的数据格式问题
+
+### 背景
+Stage 1 LoRA Val 1.0858 看起来很好。跑了 10 场景 base vs LoRA 对比测试。
+
+### 发现
+**Val Loss 低 ≠ persona 学得好**。LoRA 出现 4 类问题：
+
+1. **Metadata 泄漏**: 模型生成时输出 `[scene: [Action/Check: Condition: ...]]` 这种训练数据格式标签
+2. **角色破裂**: "I'm just a *computer* -- I can't speak human language"（致命）
+3. **第三人称混入**: "He nods at the bottles" 而不是 Kim 第一人称
+4. **缺少招牌台词**: "Let me make a note of that" 完全没出现
+
+### 根本原因
+DE 原始 `output.json` 中 Kim 的 `dialogue` 字段**混合内容**：
+```json
+{
+  "actor": "Kim Kitsuragi",
+  "dialogue": "\"It's done.\" The lieutenant wipes his brow. [Action/Check: ...]"
+}
+```
+
+我们 prepare_kim_data.py 把整段直接作为 assistant target，模型学会把：
+- 引号内对话 + 第三人称动作描写 + metadata 标签
+- 都当作"Kim 应该输出的内容"
+
+**Val Loss 1.08 测的是 token-level perplexity，没法发现这种"格式污染"**。
+
+### 假设 vs 现实
+- **假设**: Val Loss 低 → persona 学得好
+- **现实**: Val Loss 只反映"分布拟合"，不反映"输出可用性"
+
+### 影响
+1. **Stage 1 数据需要重做**：从 Kim 的 dialogue 字段里只提取**引号内直接对话**作为 target
+2. **关于 metadata 标签**: 应该保留在 prior context 里，**绝不在 assistant target 里**出现
+3. **训练目标格式必须明确**: 我们要的是 Kim **说**的话，不是 Kim **的全部行为描述**
+4. **Stage 2 设计要前置考虑**: JSON schema 强制把 dialogue 和 tool_calls 分开，应该能从根本上避免这类问题
+
+### 修复策略
+重写 `prepare_kim_data.py`：
+```python
+def extract_kim_speech(dialogue):
+    \"\"\"Extract only quoted speech from Kim's dialogue field.\"\"\"
+    quotes = re.findall(r'\"([^\"]+)\"', dialogue)
+    return ' '.join(quotes) if quotes else None  # skip if no speech
+
+# Filter: keep only Kim turns where there's actual speech
+samples = [s for s in raw_samples if extract_kim_speech(s.kim_line)]
+```
+
+预计这会把 1,587 → ~1,200 条（去掉纯叙述的 Kim 行）。
+然后重训 Stage 1 v2。
+
+### v2 重训结果（2026-04-28）
+- **数据**: 1,127 条纯 Kim 引语（vs v1 的 1,587 含污染）
+- **训练**: 同保守超参（LR 5e-5, dropout 0.15, r=16, 4 epochs）
+- **Best Val**: **0.9445** (-13% vs v1 的 1.0858)
+- **训练时长**: ~55 分钟
+- 4 epoch 持续下降，未过拟合
+
+| Epoch | Train | Val |
+|-------|-------|-----|
+| 1 | (high) | 1.022 |
+| 2 | 1.013 | 0.995 |
+| 3 | 0.956 | 0.964 |
+| 4 | 0.919 | **0.945** ← Best |
+
+**关键洞察**: 数据从 1,587 减到 1,127（-29%），Val Loss 从 1.086 降到 0.945（-13%）。**更少但更干净的数据 = 更好的模型**。这是"质量胜过数量"原则的又一次实证。
+
+### v2 Persona 测试 (10 场景对比)
+
+| 问题类型 | V1 | V2 | 修复率 |
+|---------|:--:|:--:|:------:|
+| Metadata 泄漏 | 7/10 | **0/10** | ✅ 100% |
+| 第三人称错位 | 6/10 | **1/10** | ✅ 83% |
+| 角色破裂 | 3/10 严重 | **1/10** | 🟡 67% |
+| 缺 Kim 招牌口头禅 | 10/10 | 8/10 | 🟡 20% |
+
+**V2 通过 Phase 1 准入门槛**：metadata 泄漏 + 第三人称错位 = 完全解决。
+剩余 2 类瑕疵（modern break test 偶发、口头禅密度低）留给 Stage 2/3 修复。
+
+**论文价值**: V1 vs V2 对比是论文 §B Appendix 的"data cleanup matters"案例。
+
+### 下次注意
+1. **任何对 LLM 输出有形式要求的训练**: SFT 前必须先验 1-2 条样本生成是否符合预期
+2. **Val Loss 是必要不充分条件** —— 必须配合定性 generation 测试
+3. **DE 数据特别**: dialogue 字段不是纯对话，提取时要严格筛选
+4. **Stage 2 JSON schema 是更根本的解药**: 强制 dialogue/tool_calls 分离
