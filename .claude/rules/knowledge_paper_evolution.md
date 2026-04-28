@@ -273,6 +273,62 @@ samples = [s for s in raw_samples if extract_kim_speech(s.kim_line)]
 
 **论文价值**: V1 vs V2 对比是论文 §B Appendix 的"data cleanup matters"案例。
 
+---
+
+## 2026-04-28 / Stage 2 训练 + 测试完成
+
+### 背景
+Stage 1 v2 通过后立即用 1,127 条 Stage 2 数据继续训练（`PeftModel.from_pretrained(..., is_trainable=True)` 接续 Stage 1 LoRA）。
+
+### 训练结果
+- **Best Val: 0.7246** (4 epochs，持续下降)
+- Train: 1064, Val: 63
+- 训练时长: ~75 分钟 on M4
+- LoRA size: 4.3MB
+
+### 测试结果（7 场景定性测试）
+- **JSON schema validity: 100%** (7/7)
+- **Persona drift partial**: "Calvert Junction" / "specialize in visual crimes" 等幻觉细节
+- **Tool selection accuracy: ~25%** (1/4 期望调用触发)
+  - ✅ show_character 在新角色入场时触发
+  - ❌ skill_check 在 evidence/empathy 场景没触发
+  - ❌ present_choices 在 branch 场景没触发
+
+### 假设 vs 现实
+- **假设**: Val 大幅下降 → 模型学会工具调用
+- **现实**: 模型学到了 **format**（JSON 100%）但 **content selection** 弱（25%）
+- **这正符合 SFT 的本质**: SFT 教 form，不教 correctness（见 knowledge_methodology.md §1.2）
+
+### 这是论文期望的结果
+**SFT form learned, RL correctness needed** 是论文核心叙事。Stage 2 数字做出来后正好印证了三阶段设计的必要性：
+
+```
+Stage 1: persona ↑                    | tools 0%
+Stage 2: JSON valid 0% → 100%         | tool selection still ~25%   ← here
+Stage 3 (DPO): tool selection → 80%+  | (核心 contribution)
+```
+
+§7 ablation 表会非常有说服力：每个 stage 各自解决一类问题。
+
+### 影响
+1. **Stage 2 完成签收**: L2 产出 ✅
+2. **Stage 3 DPO 必须做**（验证了它的必要性）
+3. **DPO 偏好对应该针对实测的失败模式**:
+   - F-skill: skill_check 漏调（应该调没调）
+   - F-choice: present_choices 漏调
+   - F-persona: 关于自己的事实幻觉（Calvert Junction 等）
+4. **不是所有 Stage 2 失败都是 bug**：empty tool_calls 在 small_talk 上是正确的，模型已学到这个
+
+### 下次注意
+1. **Stage 2 测试除了 valid JSON 还要测 tool semantic correctness** —— 工具调对了吗
+2. **Stage 3 DPO 偏好对要覆盖每个 Stage 2 实测失败模式**，不要凭空设计
+3. **Persona hallucination 也是 DPO 偏好对类别**（chosen=正确事实, rejected=Calvert Junction 之类）
+
+### 已交付
+- ✅ L2: `kim-q35-08b-stage2.lora` 4.3MB
+- ✅ Stage 2 测试结果 JSON: `data/disco_elysium/stage2_tool_test.json`
+- 📊 Phase 进度: 9/19 → **10/19 (53%)**
+
 ### 下次注意
 1. **任何对 LLM 输出有形式要求的训练**: SFT 前必须先验 1-2 条样本生成是否符合预期
 2. **Val Loss 是必要不充分条件** —— 必须配合定性 generation 测试

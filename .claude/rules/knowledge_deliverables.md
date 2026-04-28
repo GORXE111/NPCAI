@@ -27,7 +27,7 @@
 | ID | 产出 | 状态 | 备注 |
 |----|------|:----:|------|
 | **L1** | `kim-q35-08b-stage1.lora` | ✅ **完成 (v2)** | Val 0.9445, persona 测试通过 |
-| **L2** | `kim-q35-08b-stage2.lora` | 🟡 启动中 | 从 `[Action/Check]` 提取的工具数据 |
+| **L2** | `kim-q35-08b-stage2.lora` | ✅ **完成** | Val 0.7246, JSON 100% valid, tool selection ~25% (待 Stage 3 修) |
 | **L3** | `kim-q35-08b-stage3.lora` | ⚪ 待做 | DPO on tool faithfulness |
 
 ### B. 训练资产
