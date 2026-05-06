@@ -329,6 +329,71 @@ Stage 3 (DPO): tool selection → 80%+  | (核心 contribution)
 - ✅ Stage 2 测试结果 JSON: `data/disco_elysium/stage2_tool_test.json`
 - 📊 Phase 进度: 9/19 → **10/19 (53%)**
 
+---
+
+## 2026-05-06 / Stage 3 DPO v1 失败：Distributional Collapse
+
+### 背景
+按 methodology §3 计划，生成 2,789 条合成偏好对（9 种扰动），DPO 训练 1 epoch。
+
+### 训练数字（看起来很美好）
+- Step 662 (25%): Val Acc 98.57% (chosen > rejected) ← Best
+- Step 2648 (100%): Val Acc 97.86%
+- 训练时长: ~5 小时
+
+### 实际 generation 测试（非常糟糕）
+
+7 case 测试 Stage 2 vs Stage 3：
+
+**正例 (应调工具)**:
+- Stage 2: 1/4 (25%)  
+- Stage 3: 0/4 (**0% — 倒退**)
+
+**负例 (应空工具)**: 双方 100%
+
+**典型失败**: `new_arrival` 场景，Stage 2 正确触发 `show_character`，Stage 3 改成空工具列表。
+
+### 假设 vs 现实
+- **假设**: DPO 训练 Val Acc 98% → tool selection 大幅提升
+- **现实**: DPO 让模型 **过度保守**，倾向于不调工具
+- **核心**: Val Acc 在偏好数据上 ≠ generation 行为质量
+
+### 根因
+合成偏好对**严重偏向"少调工具更好"**:
+
+| 教 "remove tool" | 数量 | 占比 |
+|-----------------|:----:|:---:|
+| F4 出戏工具 | 526 | 19% |
+| F6 多余工具 | 503 | 18% |
+| F7 顺序错（chosen 顺序对，rejected 加 end_scene 在前）| 486 | 17% |
+| F8 重复 | 261 | 9% |
+| **小计** | **1,776** | **64%** |
+
+教 "add tool when needed" 的扰动类型: **0 条**
+
+模型完美学到"减少工具调用是好"，最终学成"什么都不调"。
+
+### 修复策略 (DPO v2)
+新增 F0_missing_tool + F0b_partial_drop 共 **724 条平衡对**：
+- chosen = 原 sample（有正确工具）
+- rejected = 同 sample 但 `tool_calls: []` 或 缺失部分工具
+
+新分布：
+- "Add tool when needed" (F0+F0b): 724 (20.6%)
+- "Remove unnecessary tool" (F4+F6+F7+F8): 1,776 (50.5%)
+- "Format/persona/skill correctness" (F1-F3, F5, F9): 837 (23.8%)
+
+### 影响
+1. **Stage 3 v1 不能用** —— 比 Stage 2 还差，论文不能用
+2. **Stage 3 v2 训练中** (PID 62316, 3337 对, 预计 2.5 小时)
+3. **论文价值新增**: §B Appendix "DPO data balance matters" 案例
+
+### 下次注意
+1. **DPO 偏好数据必须平衡**: "教什么时候做" + "教什么时候不做" 都要有
+2. **Val Acc on preference pairs ≠ generation quality**: 必须用真实 generation 验证
+3. **检查偏好数据 distribution**: 64% 同方向就是危险信号
+4. **Distributional collapse 在 0.8B + 1 epoch 都会发生**，β=0.1 不足以 prevent，需要数据平衡
+
 ### 下次注意
 1. **任何对 LLM 输出有形式要求的训练**: SFT 前必须先验 1-2 条样本生成是否符合预期
 2. **Val Loss 是必要不充分条件** —— 必须配合定性 generation 测试
