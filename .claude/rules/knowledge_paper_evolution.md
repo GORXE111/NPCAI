@@ -500,6 +500,113 @@ S3 v2 输出 "A detective in Geneva"，Geneva 不在 DE 世界。需要在 DEBen
 
 ### Phase 进度: 10/19 → **13/19 (68%)**
 
+---
+
+## 2026-05-11 / DEBench 评估结果：Stage 2 数据是根本瓶颈
+
+### 5 配置 DEBench 完整结果
+
+| Metric | base | stage1 | stage2 | s3_v1 | s3_v2 |
+|--------|:----:|:------:|:------:|:-----:|:-----:|
+| Tool Precision | 0.000 | 0.000 | 0.000 | 0.000 | **0.250** |
+| Tool Recall | 0.000 | 0.000 | 0.000 | 0.000 | **0.038** |
+| Tool F1 | 0.000 | 0.000 | 0.000 | 0.000 | **0.066** |
+| Suppress Empty | 0.967 | 0.000 | 1.000 | 1.000 | 1.000 |
+| JSON Valid | 0.940 | **0.120** | 1.000 | 1.000 | 1.000 |
+| No-Break | 0.980 | 1.000 | 1.000 | 1.000 | 1.000 |
+
+**Per-category tool F1** (50 scenarios across 6 categories):
+- 只有 **scene 类别有效**：s3_v2 P1.0 / R0.4 — 学会了"新角色出现 → show_character"
+- evidence / social / branch / emotion / combined / filler: **全 0**
+
+### 假设 vs 现实
+- **假设**: Stage 3 DPO 把 tool selection 25% → 80%+
+- **现实**: Stage 2 实际就 0%，DPO v2 推到 3.8%，离 80% 差 21倍
+
+### 根因诊断（深度分析）
+
+**Stage 2 训练数据的工具触发模式 ≠ DEBench 评估的触发模式**：
+
+训练时 `skill_check` 触发规则：
+- **前置触发**：Skill actor (如 "Empathy") 先说话，Kim 之后回应
+
+DEBench 期望的触发规则：
+- **后置触发**：Detective 问 Kim 一个问题（"读他的脸"/"看现场"），Kim 应该**主动**调用工具
+
+→ **模型学到的是"模仿训练数据里已经标注的工具"**，没有学会"从对话意图推断该调什么工具"。
+
+类似失败模式：
+- `present_choices` 训练触发：玩家选项跟在 Kim 之后；DEBench 触发：玩家问"该怎么办"
+- `set_expression` 完全没在训练数据出现（推断而来）
+- `skill_check` 训练分布：Inland Empire/Interfacing/Visual Calculus 都有，但模型没学到"什么场景该调什么"
+
+唯一有效 = `show_character`，因为训练触发（新角色出现）和 DEBench 触发（新角色出现）**模式一致**。
+
+### 影响
+1. **Stage 1 v2 / Stage 2 / Stage 3 v1/v2 全部 LoRA 在 tool selection 上 ≈ 等效**（除了 show_character）
+2. **不能直接发论文** — F1 0.066 远低于 14B 系统的 ~80%
+3. **数据是核心瓶颈**，不是模型 / DPO / 超参问题
+4. **Stage 1 LoRA 还破坏了 JSON 输出** (94% → 12%)，这是另一个 bug
+
+### 决策：方案 A — 重做 Stage 2 数据
+
+**核心改造**：让 Kim 学会"从 Detective 提问意图推断工具调用"
+
+新数据触发规则：
+- "Look at X" / "What do you see" → `skill_check(Visual Calculus / Perception / Logic)`
+- "Is he lying?" / "Read his face" → `skill_check(Empathy / Authority)`
+- "What's our next move?" / "How to handle?" → `present_choices`
+- "Examine the lock" → `skill_check(Interfacing / Hand/Eye Coordination)`
+- "What does this say?" → `skill_check(Encyclopedia / Logic / Rhetoric)`
+- 等等
+
+目标：3-5K 高质量主动触发训练样本。
+
+### 下次注意
+1. **训练数据触发模式必须匹配评估触发模式** — 不然 benchmark 看上去再好都没用
+2. **空工具样本占比要谨慎**: Stage 2 v1 有 47% 空工具样本 → 模型学会"默认空"
+3. **Per-category 评估优于 overall** — 暴露 scene-only 这种局部成功
+4. **Val Loss / Val Acc 在 SFT 和 DPO 都不能预测 generation 质量** — 真实 benchmark 才是 ground truth
+5. **训 LoRA 前先验证生成模式**: Stage 1 应该测一下输出 JSON 看会不会破坏 format
+
+---
+
+## 2026-05-11 / Stage 2 v3 数据重构（intent-driven）
+
+### 背景
+DEBench 显示 Stage 2 v1/v2 触发模式错位：训练数据靠"前置触发"（skill actor 先说），DEBench 要求"主动触发"（从 Detective 问题推断）。
+
+### 数据策略：Skill Mining
+新方法：每个 DE 语料里的 skill actor 行（如 `Empathy: "His eyes flicker"`）都是 ground truth tool fire 点。把这些**重新组织**：
+- INPUT: 移除 skill actor 行的 context + Kim 的回应
+- OUTPUT: `skill_check(skill=该 skill 名)` + Kim 对话
+
+模型被迫**从 Detective 的提问推断**该调什么 skill，因为 skill actor 不再出现在 context 里。
+
+### 数据规模
+- 487 train + 30 val（vs v2 的 1064，更少）
+- 但**多样性更高**:
+  - 22 个 DE 技能均衡分布（top: Rhetoric 26, Inland Empire 21, Encyclopedia 13, Authority 12 ...）
+  - 35% skill_check / 31% show_character / 30% empty / 4% present_choices
+
+### 关键改造
+1. **`exclude_skills=True`** when building context for skill_check samples
+2. **Garbage filter**: 过滤 task state markers (`auto.X.Y`, `TASK.X`)
+3. **Balanced sampling**: 70% positive + 30% negative
+
+### 训练已启动
+PID 65077，预计 30-50 分钟
+
+### 期望结果（vs v2）
+- skill_check 触发率从 0% → 30%+
+- present_choices 触发率从 0% → 20%+
+- 其他工具维持或提升
+
+### 下次注意
+1. **训练数据触发模式 = 评估触发模式** 是 NPC 工具调用的硬约束
+2. **Skill mining 是高效率数据生成策略**（用语料自带信号，零标注成本）
+3. **Garbage filter 必须早做**: training data 里的 `auto.X.Y` 类标记会污染 generation
+
 ### 下次注意
 1. **任何对 LLM 输出有形式要求的训练**: SFT 前必须先验 1-2 条样本生成是否符合预期
 2. **Val Loss 是必要不充分条件** —— 必须配合定性 generation 测试
