@@ -28,25 +28,27 @@
 |----|------|:----:|------|
 | **L1** | `kim-q35-08b-stage1.lora` | ✅ **完成 (v2)** | Val 0.9445, persona 测试通过 |
 | **L2** | `kim-q35-08b-stage2.lora` | ✅ **完成** | Val 0.7246, JSON 100% valid, tool selection ~25% (待 Stage 3 修) |
-| **L3** | `kim-q35-08b-stage3.lora` | ⚪ 待做 | DPO on tool faithfulness |
+| **L3** | `kim-q35-08b-stage3.lora` (v1) | ⚠️ **失败** | DPO collapse — kept as negative result |
+| **L3** | `kim-q35-08b-stage3_v2.lora` | ✅ **完成** | Val Acc 96.59%, balanced DPO, 待 DEBench 评估 |
 
 ### B. 训练资产
 
 | ID | 产出 | 状态 |
 |----|------|:----:|
 | **L4** | `kim_train.jsonl` (1,127 v2 cleaned SFT) | ✅ 完成 |
-| **L5** | Stage 2 工具 SFT 数据集 | ⚪ 待做 |
-| **L6** | Stage 3 DPO 偏好对 (3-5K) | ⚪ 待做 |
-| **L7** | 训练脚本 (3 stage 各一) | 🟡 1/3 完成 |
+| **L5** | Stage 2 工具 SFT 数据集 | ✅ 完成 (1,064 samples, 工具均衡) |
+| **L6** | Stage 3 DPO 偏好对 (3-5K) | ✅ 完成 (3,337 balanced pairs, 10 perturbations) |
+| **L7** | 训练脚本 (3 stage 各一) | ✅ 完成 (train_kim_lora + train_stage2_kim + train_dpo_kim) |
 | **L8** | `qwen35_mps_fix.py` | ✅ 完成 |
 
 ### C. 评估资产（学术贡献）
 
 | ID | 产出 | 状态 |
 |----|------|:----:|
-| **L9** | DEBench 数据集（80 conversation × 3 tasks） | ⚪ 待做 |
-| **L10** | DEBench 评分脚本（多 judge panel） | ⚪ 待做 |
-| **L11** | CPDC 2025 + BFCL V4 跑分结果 | ⚪ 待做 |
+| **L9** | DEBench 数据集（130 scenarios × 3 tasks） | ✅ **完成 v1** (50 persona + 50 tool + 30 suppression) |
+| **L10** | DEBench 评分脚本 | ✅ 完成 (precision/recall/F1/skill arg acc/persona break detector) |
+| **L10b** | DEBench 评估结果 (5 configs) | 🟡 跑中 (PID 64491, base→stage3_v2, 预计 60-90 分钟) |
+| **L11** | CPDC 2025 + BFCL V4 跑分结果 | ⚪ 待做 (Phase 4) |
 
 ---
 
@@ -80,13 +82,24 @@
 ## 4. 整体进度
 
 ```
-LLM 层:   ██████░░░░░░░░░░░░░  5/11  (L1, L4, L7-stage1, L8 + 部分 L7)
+LLM 层:   ███████████████░░░░  9/11  (L1 L2 L3v2 L4 L5 L6 L7 L8 L9 L10, 缺 L10b 跑完 + L11)
 Agent 层: ██████░░░░░░░░░░░░░  4/8   (A5, A6, 部分 A1, 部分 A7)
 ─────────────────────────────────────
-总进度:   ██████████░░░░░░░░░  9/19  (~47%)
+总进度:   █████████████░░░░░░  13/19  (~68%)
 ```
 
-里程碑达成: **Stage 1 LoRA 通过 persona 测试**（2026-04-28），可进 Phase 2。
+里程碑达成:
+- **Stage 1 v2 LoRA 通过 persona 测试**（2026-04-28）
+- **Stage 2 LoRA Val 0.7246, JSON 100%**（2026-04-28）
+- **Stage 3 DPO v1 失败, v2 balanced 重训 96.59% Val Acc**（2026-05-11）
+- **DEBench v1 设计完成 (130 场景)**（2026-05-11）
+- **DEBench 5 配置评估启动**（2026-05-11，PID 64491）
+
+剩余关键工作:
+- L10b: DEBench 跑完，分析 ablation
+- L11: CPDC 2025 跑分（外部基准对标）
+- A1-A4 Unity demo + 资源
+- A8 Demo 视频
 
 ---
 

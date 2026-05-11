@@ -394,6 +394,112 @@ Stage 3 (DPO): tool selection → 80%+  | (核心 contribution)
 3. **检查偏好数据 distribution**: 64% 同方向就是危险信号
 4. **Distributional collapse 在 0.8B + 1 epoch 都会发生**，β=0.1 不足以 prevent，需要数据平衡
 
+---
+
+## 2026-05-11 / Stage 3 DPO v2 完成，发现 7-case 测试不足以判断
+
+### 训练结果
+- 3,337 平衡偏好对训练 1 epoch（~5.5 小时）
+- Best Val Acc 96.59%（v1 是 98.57%，但 v1 是 collapse）
+- Val Loss 0.234 (final)
+
+### Generation 测试 (7 cases)
+
+| 配置 | Positive cases (4) | Negative cases (3) | Total |
+|------|:-----------------:|:------------------:|:------:|
+| S2 | 1/4 (25%) | 3/3 (100%) | 4/7 (57%) |
+| S3 v1 | 0/4 (0%) collapse | 3/3 | 3/7 (43%) |
+| **S3 v2** | **0/4 (0%) 但 try to call** | 3/3 | 3/7 (43%) |
+
+### 假设 vs 现实
+- **假设**: 添加 F0_missing_tool 数据 → tool selection 提升
+- **现实**: v2 vs v1 行为变了（开始尝试调工具）**但选错工具**
+- **本质问题**: 7-case 测试集太小，3 positive case 不足以下结论
+
+### 行为变化的细节
+- v1: collapse — 几乎不调工具
+- v2: chaos — 调工具但常调错
+  - suspect_lying → 调了 show_character（应该是 Empathy skill_check）
+  - investigation_branch → 调了 show_character（应该是 present_choices）
+
+这暗示数据平衡**有效消除了 collapse**，但**精度还不够**。需要更大的测试集才能判断。
+
+### 改变的决策
+**不再用 7-case 微测试评估**。立刻构建 **DEBench** 正式测试集：
+- 50+ 场景 × 多维度（persona / skill-tool / game-tool）
+- ground-truth 工具调用标注
+- 精度 / 召回 / F1 / multi-judge persona 评分
+
+### 还有 persona 幻觉问题
+S3 v2 输出 "A detective in Geneva"，Geneva 不在 DE 世界。需要在 DEBench 中加 **persona fact** 评估。
+
+### 下次注意
+1. **小测试集（<20 case）只能做 sanity check，不能下结论**
+2. **正式评估必须有 ground truth + 多维度 + 统计显著性**
+3. **DPO 的真实效果在 7-case 看不出来**，必须放到更大测试集
+4. **Persona drift 需要单独追踪**：训 LoRA 时容易副作用
+
+---
+
+## 2026-05-11 / DEBench v1 设计 + 5 配置评估启动
+
+### 背景
+7-case 测试集太小判不了 S3 v1/v2 是否真的提升。立即构建正式 benchmark。
+
+### DEBench v1 设计
+**130 个场景，分 3 个 sub-benchmark**：
+
+**A. Persona (50 scenarios)** — 测 Kim 声音的一致性
+- 涵盖 DE 风格的多样化情境：crime scene / confession / introspection / break tests
+- 每个场景有 rubric（不是 ground truth dialogue，是判断标准）
+- 评分: JSON valid rate / no_break rate（关键词检测）/ brief rate
+- **更复杂的 multi-judge LLM panel** 留作 Phase 4
+
+**B. Tool Selection (50 scenarios)** — 测工具调用准确性
+- 6 个类别：evidence (5), social (5), scene (5), branch (5), emotion (5), combined (3), filler (22)
+- 每个有 expected_tools 集合 + expected_skills/actors 候选
+- 评分: precision/recall/F1 on tool name + skill_arg_acc + actor_arg_acc
+
+**C. Tool Suppression (30 scenarios)** — 测什么时候不调工具
+- 纯闲聊 / 元 prompt / 简单问候
+- 评分: empty_rate（应该为 0 的比例）
+
+### 评估配置
+5 个配置同步对比：
+- `base` — Qwen3.5-0.8B 无任何 LoRA
+- `stage1` — + Stage 1 v2 LoRA
+- `stage2` — + Stage 2 LoRA
+- `stage3_v1` — + DPO v1 (collapse 版本)
+- `stage3_v2` — + DPO v2 (balanced)
+
+### 评估在跑
+- PID 64491
+- 5 configs × 130 scenarios = 650 generation
+- 预计 60-90 分钟
+
+### 等到结果出来要看什么
+这是论文 §7 的核心数据：
+
+1. **Stage 1 vs Base**: persona 是否真的提升
+2. **Stage 2 vs Stage 1**: JSON validity + tool 召回是否提升
+3. **Stage 3 v1 vs Stage 2**: 是否真的 collapse（应该可以看到 tool recall 大降）
+4. **Stage 3 v2 vs v1**: F0 balancing 是否管用
+5. **Stage 3 v2 vs Stage 2**: DPO 总体是提升还是倒退 — **论文核心 claim**
+
+### 决策树
+- 如果 **S3 v2 vs S2 在 tool F1 显著提升 (+15pp+)** → 进 Phase 4 (CPDC + 论文写作)
+- 如果 **持平或略升** → 补 Phase 3 Stage B 真实分布数据
+- 如果 **倒退** → 用 Stage 2 作为最终版，论文重定位为"SFT alone is enough" 反向叙事
+
+### 已交付
+- ✅ L6: 3,337 balanced DPO 偏好对（含 F0_missing_tool 修正）
+- ✅ L9: DEBench v1 (130 scenarios)
+- ✅ L10: 评分脚本 `run_debench.py`
+- 🟡 L3v2: Stage 3 v2 LoRA（DPO Val Acc 96.59%）
+- 🟡 L10b: 5 配置评估（跑中）
+
+### Phase 进度: 10/19 → **13/19 (68%)**
+
 ### 下次注意
 1. **任何对 LLM 输出有形式要求的训练**: SFT 前必须先验 1-2 条样本生成是否符合预期
 2. **Val Loss 是必要不充分条件** —— 必须配合定性 generation 测试
