@@ -607,6 +607,98 @@ PID 65077，预计 30-50 分钟
 2. **Skill mining 是高效率数据生成策略**（用语料自带信号，零标注成本）
 3. **Garbage filter 必须早做**: training data 里的 `auto.X.Y` 类标记会污染 generation
 
+---
+
+## 2026-05-14 / 撞墙：DPO 第三次 collapse，需要战略转向
+
+### 完整实验矩阵（7 个系统）
+| 系统 | Tool F1 | Suppress | 问题 |
+|------|:-------:|:--------:|------|
+| Stage 2 v1 | 0.000 | 1.00 | 啥也不调 |
+| Stage 2 v2 | 0.000 | 1.00 | 啥也不调 |
+| Stage 3 v1 DPO | 0.000 | 1.00 | collapse |
+| Stage 3 v2 DPO | 0.066 | 1.00 | 几乎不调 |
+| **Stage 2 v3** | **0.105** | 0.27 | 过度调用（best F1）|
+| Stage 2 v3.1 | 0.069 | 0.90 | 过度保守 |
+| Stage 3 v3 DPO | 0.000 | 1.00 | **又 collapse** |
+
+### 假设 vs 现实（累计 3 次）
+- **假设**: DPO 用平衡偏好对能修复 tool selection
+- **现实**: DPO 三次（v1/v2/v3）都 collapse 到"啥也不调"
+- **根因**: 偏好数据**净方向**总是偏向"少调工具"
+  - v1: 64% "remove tool"
+  - v3: F_overcall 36% vs F0 18% = 2:1 偏向 empty
+- **更深**: 0.8B + DE 语料无法泛化主动工具选择到 DEBench 分布
+
+### 关键认知转变
+**DPO 不是这个问题的解药**。即使数据完美平衡，0.8B 在有限领域数据上学不会泛化的 proactive tool calling。
+
+best 结果 = Stage 2 v3 SFT 的 F1 0.105，离论文需要的 0.5+ 差 5 倍。
+
+### 决定性对照实验
+必须测 **Base Qwen3.5-0.8B + few-shot prompting** on DEBench：
+- base+fewshot >> LoRA → 论文转向 "ICL > fine-tuning at 0.8B for NPC tools"
+- base+fewshot 也烂 → limits study，0.8B 天花板
+- 决定整个论文方向
+
+### 论文价值（即使转向）
+这 7 个失败实验本身是 contribution：
+1. **DPO collapse pattern**（3 次复现）→ 方法论警示
+2. **数据触发模式失配** → benchmark 设计教训
+3. **质量胜数量**（多次验证）
+4. **0.8B SFT/DPO 在工具泛化上的实证天花板**
+
+### 下次注意
+1. **DPO 偏好数据方向偏差是反复踩的坑** — 必须严格 1:1 平衡 add/remove
+2. **撞墙时先做 cheap 对照实验**（base+fewshot 30 分钟）再决定大方向，别一直堆训练
+3. **训练 7 个系统才意识到要测 base+fewshot** — 应该第一天就做这个 baseline
+4. **DPO checkpoint 按 Val Loss 存而非 Val Acc** — Acc 在 noisy 偏好数据上不动，Loss 才反映学习
+
+---
+
+## 2026-05-15 / 战略转向：放弃 0.8B，切 Qwen3.5-2B 从 0 重做
+
+### 背景
+0.8B 上 7 个系统全部 F1 ≤ 0.105，DPO 3 次 collapse。调研确认 DeepSeek V4 无 <3B 小模型（284B 起步），DeepSeek 路线断。
+
+### 决策
+**全面切 Qwen3.5-2B，从 Stage 1 重新开始。**
+
+理由：
+1. **DeepSeek V4 排除**：最小 V4-Flash 284B，M4 训不了；唯一 sub-3B 是 R1-Distill-Qwen-1.5B（math/think 导向，不适合 NPC）
+2. **Qwen3.5-2B 是唯一现实升级**：有 `qwen35_mps_fix.py` patch，SFT 能在 M4 跑（~12GB float32）
+3. **0.8B 可能是容量天花板**：base+fewshot 实验未跑完（M4 太慢），但 7 个训练系统全失败强烈暗示容量不足
+4. **2B 已在本对话验证可训**（之前 Stage 2/3 v0 尝试加载成功，dtype patch 有效）
+
+### 复用资产（不浪费前期工作）
+- Stage 1 数据: `data_kim_v2/kim_train.jsonl` (1,127 cleaned Kim)
+- Stage 2 数据: `data_kim_v3_1` (intent-driven 50/50, 677) — 之前最好的 Stage 2 数据
+- Stage 3 DPO: `data_kim_dpo_v3` (1,861 balanced + F_overcall)
+- 所有 prepare/train 脚本（改 MODEL_NAME 即可）
+
+### M4 上 Qwen3.5-2B 的已知约束
+- 2B float32 ≈ 8GB 权重 → SFT LoRA 跑得动（~12GB，会 swap 但能完成）
+- **DPO 跑不了**: ref+policy 双模型 = 16GB 仅权重，装不下 → Stage 3 可能要：
+  - 跳过 DPO（纯 SFT），或
+  - 用 reference-free 方法（ORPO/SimPO，单模型），或
+  - 上 H100
+
+### H100 备选已评估
+- 单卡 H100 80GB：全参 ≤7B / LoRA ≤20B / QLoRA ≤70B
+- 能跑正经 GRPO（CPDC 第一名方法）+ 2-9B + 双模型 DPO
+- 云租 ~$2-3/h，我们训练量分钟级
+- **若 2B SFT 仍不达标 → 上 H100 是明确下一步**
+
+### 当前状态
+- Qwen3.5-2B Stage 1 训练中（PID 2717, 1.88B params 确认, 1,064 train）
+- print 标签 "Qwen3.5-0.8B" 是硬编码遗留字符串，实际模型是 2B（param count 已验证）
+
+### 下次注意
+1. **撞墙时尽早做 cheap baseline + 调研可选项**，别堆 7 个失败训练才转向
+2. **print 标签用变量不要硬编码**，避免误判
+3. **2B DPO 在 M4 不可行** — 提前规划 H100 或 reference-free
+4. **0.8B → 2B 是这个 paper 的关键 scale 实验**，结果本身有论文价值（"NPC tool-calling 的最小可行 SLM size"）
+
 ### 下次注意
 1. **任何对 LLM 输出有形式要求的训练**: SFT 前必须先验 1-2 条样本生成是否符合预期
 2. **Val Loss 是必要不充分条件** —— 必须配合定性 generation 测试
