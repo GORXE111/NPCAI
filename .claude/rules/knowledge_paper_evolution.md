@@ -699,6 +699,55 @@ best 结果 = Stage 2 v3 SFT 的 F1 0.105，离论文需要的 0.5+ 差 5 倍。
 3. **2B DPO 在 M4 不可行** — 提前规划 H100 或 reference-free
 4. **0.8B → 2B 是这个 paper 的关键 scale 实验**，结果本身有论文价值（"NPC tool-calling 的最小可行 SLM size"）
 
+---
+
+## ⏯️ 恢复点 (2026-05-16, 关机后续作)
+
+### Mac 网络注意
+- `huggingface.co` 不通时，训练脚本会因 tokenizer 联网检查失败
+- **解法**: `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1` 前缀（缓存已全，无需联网）
+- HF 缓存位置: `~/.cache/huggingface/hub/models--Qwen--Qwen3.5-2B`（齐全）
+
+### 当前任务流（Qwen3.5-2B pivot）
+```
+🟡 Stage 1 (Qwen3.5-2B)  训练中 PID 1542
+   脚本: ~/npcllm/model/train_kim_2b_s1.py
+   数据: ~/npcllm/data_kim_v2/kim_train.jsonl (1064)
+   输出: ~/npcllm/checkpoints/kim_q35_2b/lora
+   日志: ~/npcllm/2b_s1_train.log
+   上次中断在 E3 Step532 Val 0.9167（已重启跑完整 4 epochs）
+
+⏳ Stage 2 (待做): 数据 ~/npcllm/data_kim_v3_1/ (intent-driven 50/50, 677)
+   需创建 train_kim_2b_s2.py（改 train_stage2_v3.py 的 MODEL_NAME + 接 2b s1 lora）
+
+⏳ Stage 3 (待定): M4 跑不了 2B DPO → 选项: 跳过/ORPO/H100
+
+⏳ DEBench: run_debench.py 加 kim_q35_2b 配置后评估
+```
+
+### 关键文件
+- 训练脚本模板都在 `~/npcllm/model/`，改 MODEL_NAME + 路径即可
+- DEBench: `~/npcllm/benchmarks/debench_v1.json` + `run_debench.py`
+- 所有 0.8B negative result checkpoint 已存 GitHub
+
+### 期望
+2B Stage 1 Val 应 ≤ 0.9（0.8B 是 0.945）。Stage 2 后跑 DEBench 看 tool F1 是否突破 0.8B 的 0.105 天花板。
+
+### Stage 1 结果 (2026-05-16 完成)
+- **Best Val 0.8886**（vs 0.8B v2 的 0.945, -6%）
+- 4 epoch 持续降，无过拟合
+- Persona 测试：
+  - ✅ in-character 质量明显优于 0.8B（"I'm Kim Kitsuragi -- lieutenant, RCM Precinct 41"，无 Geneva/Calvert 幻觉）
+  - ✅ 程序化语气地道（anti_authority/introspection 完美）
+  - 🔴 break-test 仍失败 2/10（"It's 2025" / "I am a computer program"）—— base 指令跟随泄漏，已知难点
+- 结论：可接受，进 Stage 2
+
+### Stage 2 启动 (2026-05-16)
+- PID 28227，train_kim_2b_s2.py
+- 接 Stage 1 LoRA + data_kim_v3_1（intent-driven 50/50, 677 train）
+- 关键实验：2B 能否突破 0.8B tool F1 0.105 天花板
+- 输出: ~/npcllm/checkpoints/kim_q35_2b_stage2/lora
+
 ### 下次注意
 1. **任何对 LLM 输出有形式要求的训练**: SFT 前必须先验 1-2 条样本生成是否符合预期
 2. **Val Loss 是必要不充分条件** —— 必须配合定性 generation 测试
