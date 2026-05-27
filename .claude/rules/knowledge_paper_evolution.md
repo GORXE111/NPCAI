@@ -748,6 +748,69 @@ best 结果 = Stage 2 v3 SFT 的 F1 0.105，离论文需要的 0.5+ 差 5 倍。
 - 关键实验：2B 能否突破 0.8B tool F1 0.105 天花板
 - 输出: ~/npcllm/checkpoints/kim_q35_2b_stage2/lora
 
+---
+
+## 2026-05-22 / 🎉 BREAKTHROUGH: 2B Stage 2 突破 0.8B 天花板 6 倍
+
+### Stage 2 v3.1 (2B) DEBench 结果
+- Val Loss 0.6055（vs 0.8B v3.1 的 0.6469, -6%）
+- **DEBench Tool F1: 0.639** ← 突破 0.8B 最高 0.105 的 **6 倍**
+- Precision 0.705, Recall 0.585
+- Per-category F1: evidence/social/scene/combined 全部正向
+- JSON 100%, No-Break 98%
+
+### Per-category（v3.1 2B）
+```
+evidence  n=5 tp=2 fp=2 fn=3 P=0.50 R=0.40
+social    n=5 tp=2 fp=0 fn=3 P=1.00 R=0.40
+scene     n=5 tp=2 fp=2 fn=3 P=0.50 R=0.40
+branch    n=5 tp=0 fp=4 fn=5 P=0.00 R=0.00  ← 训练数据无
+emotion   n=5 tp=0 fp=5 fn=5 P=0.00 R=0.00  ← 训练数据无
+combined  n=3 tp=3 fp=0 fn=3 P=1.00 R=0.50
+```
+
+### 论文核心 claim 现在站住
+| 系统 | Tool F1 | 提升 |
+|------|:------:|:----:|
+| 0.8B 最佳 (v3) | 0.105 | baseline |
+| **2B v3.1** | **0.639** | **6×** |
+
+这就是论文的 contribution。
+
+---
+
+## 2026-05-23 / Stage 2 v3.2 失败教训：负样本过度治理
+
+### 试图修 v3.1 弱点（branch/emotion F1=0, Suppress 0.30）
+v3.2 数据加入：
+- +54 branch (present_choices) 合成场景
+- +40 emotion (set_expression) 合成场景
+- +115 smalltalk 负样本（含 80 个重复——这是错的）
+
+### v3.2 (2B) DEBench 结果
+- Val Loss 0.5569（**比 v3.1 还低 8%**）
+- **DEBench F1: 0.000** ❌
+- Suppression 1.00（完全不调）
+
+### 假设 vs 现实
+- **假设**: 加 smalltalk 负样本 → 治过度调用 + branch/emotion 学到位
+- **现实**: 80 个重复 smalltalk 把模型权重往"empty 最安全"拉过头 → collapse 回 0.8B 失败模式
+
+### 教训
+1. **Val Loss 低 ≠ generation 好**（第 4 次实证 — 不长记性）
+2. **负样本重复 80 倍** = 隐形的方向偏置
+3. **v3.1 的 Suppress 0.30 不是 bug，是允许 trade-off**
+4. **修一个弱点时不要动其他变量** — 单一变化原则
+5. **smalltalk 负样本要 ≤ 5%**，不能 13%
+
+### Stage 2 v3.3 策略（修正 v3.2 错误）
+- 保留 v3.1 全部 677 样本不动
+- **只**加 55 个 branch + emotion（不加 smalltalk）
+- 不重复任何样本
+- 总 732 (vs v3.1 677, +8%)
+
+预期：F1 维持 ~0.6 + branch/emotion 非零
+
 ### 下次注意
 1. **任何对 LLM 输出有形式要求的训练**: SFT 前必须先验 1-2 条样本生成是否符合预期
 2. **Val Loss 是必要不充分条件** —— 必须配合定性 generation 测试

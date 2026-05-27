@@ -90,6 +90,14 @@ Full JSON schema in `unity/Assets/Scripts/Agent/BuiltinToolHandlers.cs` and [pap
 
 ## Key Findings
 
+### 0. Parameter-count threshold for NPC tool calling (the headline)
+At 0.8B, no SFT/DPO recipe across eight configurations exceeded Tool F1 = 0.11 on DEBench. Identical training data on Qwen3.5-2B yields **Tool F1 = 0.639 (6× improvement)**. The scale jump dwarfs all data-engineering improvements within 0.8B — there is a parameter-count floor for this task.
+
+| Config (identical data: v3.1 intent 50/50) | Model | Tool F1 |
+|--------|:----:|:------:|
+| Stage 2 | 0.8B | 0.069 |
+| **Stage 2** | **2B** | **0.639** |
+
 ### 1. Data quality dominates quantity (replicated across 3 generations)
 | Setup | Samples | Val Loss |
 |------|---------|---------:|

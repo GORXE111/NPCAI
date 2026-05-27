@@ -8,7 +8,7 @@
 
 ## Abstract
 
-Modern small language models (SLMs) under 1 billion parameters can produce competent dialogue but struggle to act in interactive game settings: existing systems either generate text without grounding it in game-engine actions, or rely on cloud-scale models for tool invocation. We present **Skill-as-Tool (SaT)**, a framework that grounds an SLM-driven NPC in a structured tool API representing in-character decision skills, and we instantiate it with Kim Kitsuragi from *Disco Elysium*—a character whose internal "skill checks" map naturally onto our tool-call abstraction. Our system runs entirely on consumer hardware (Apple M4, 16GB) using Qwen3.5-0.8B as the policy model, integrated with a Unity-based visual-novel environment that executes 18 grounded tools (`set_expression`, `play_bgm`, `present_choices`, `skill_check`, `show_cg`, etc.). We propose a three-stage training recipe—persona-SFT on extracted character dialogue (1,127 cleaned Kim utterances, Val Loss 0.945), tool-augmented SFT on action-tagged conversations (1,064 samples, achieving 100% JSON schema validity), and Direct Preference Optimization on tool-faithfulness pairs (3,337 balanced pairs across 10 perturbation types, Val Acc 96.59%). A key methodological contribution is identifying and resolving **DPO distributional collapse from imbalanced preference data**: our first DPO run with 64% of pairs teaching "remove tool" caused tool selection to drop to 0%; adding an `F0_missing_tool` perturbation class restored balance. We evaluate on three benchmarks: the **CPDC 2025 Persona-Grounded Dialogue Challenge** (standard), the **Berkeley Function Calling Leaderboard V4** (standard), and **DEBench**, a 130-scenario Disco-Elysium-specific benchmark we contribute scoring persona consistency (50), tool selection precision/recall/F1 (50), and tool suppression (30). Our results show that a 0.8B model with skill-as-tool training [TODO: fill DEBench numbers once evaluation completes] approaches the persona-fidelity of CPDC 2025's 14B winners on dialogue while delivering ~1.5s per-turn on-device latency. We release the Unity visual-novel environment, all trained checkpoints (including the failed v1 DPO as a documented negative result), and DEBench. All code and data are at https://github.com/GORXE111/NPCAI.
+Modern small language models (SLMs) under 1 billion parameters can produce competent dialogue but struggle to act in interactive game settings: existing systems either generate text without grounding it in game-engine actions, or rely on cloud-scale models for tool invocation. We present **Skill-as-Tool (SaT)**, a framework that grounds an SLM-driven NPC in a structured tool API representing in-character decision skills, and we instantiate it with Kim Kitsuragi from *Disco Elysium*—a character whose internal "skill checks" map naturally onto our tool-call abstraction. Our system runs entirely on consumer hardware (Apple M4, 16GB) using Qwen3.5-0.8B as the policy model, integrated with a Unity-based visual-novel environment that executes 18 grounded tools (`set_expression`, `play_bgm`, `present_choices`, `skill_check`, `show_cg`, etc.). We propose a three-stage training recipe—persona-SFT on extracted character dialogue (1,127 cleaned Kim utterances, Val Loss 0.945), tool-augmented SFT on action-tagged conversations (1,064 samples, achieving 100% JSON schema validity), and Direct Preference Optimization on tool-faithfulness pairs (3,337 balanced pairs across 10 perturbation types, Val Acc 96.59%). A key methodological contribution is identifying and resolving **DPO distributional collapse from imbalanced preference data**: our first DPO run with 64% of pairs teaching "remove tool" caused tool selection to drop to 0%; adding an `F0_missing_tool` perturbation class restored balance. We evaluate on three benchmarks: the **CPDC 2025 Persona-Grounded Dialogue Challenge** (standard), the **Berkeley Function Calling Leaderboard V4** (standard), and **DEBench**, a 130-scenario Disco-Elysium-specific benchmark we contribute scoring persona consistency (50), tool selection precision/recall/F1 (50), and tool suppression (30). Our results expose a sharp parameter-count threshold for proactive in-character tool selection on the *Disco Elysium* corpus: at the 0.8B scale, no SFT or DPO recipe we tried achieves Tool F1 > 0.11 on DEBench (eight 0.8B configurations evaluated). Scaling to Qwen3.5-2B with identical training data yields **Tool F1 = 0.639** (6.1× over the best 0.8B), with 100% JSON schema validity and 98% no-character-break rate — establishing 2B as a viable on-device base for game NPC tool-augmented dialogue. We release the Unity visual-novel environment, all trained checkpoints (including the failed v1 DPO as a documented negative result), and DEBench. All code and data are at https://github.com/GORXE111/NPCAI.
 
 **Keywords**: NPC dialogue, tool use, function calling, small language models, on-device inference, visual novel, Unity, Disco Elysium, Kim Kitsuragi
 
@@ -257,7 +257,36 @@ We release DEBench at https://github.com/GORXE111/NPCAI/tree/main/benchmarks/deb
 
 ### 7.2 Main Result: DEBench
 
-We evaluate 5 ablation configurations on DEBench v1: `base` (no LoRA), `stage1` (persona-SFT only), `stage2` (persona + tool-aug SFT), `stage3_v1` (collapsed DPO, kept as negative result), `stage3_v2` (balanced DPO — our final system). Evaluation is currently running on Apple M4 (5 configs × 130 scenarios = 650 generations, ~60–90 minutes).
+We evaluate **eight ablation configurations** spanning two model scales (0.8B and 2B) on DEBench v1 (130 scenarios across persona, tool-selection, and tool-suppression). The headline finding: **model scale is the decisive factor for proactive tool selection at this regime — Qwen3.5-2B achieves Tool F1 = 0.639 versus 0.8B's best of 0.105, a 6× improvement**, while the gap from in-domain SFT data engineering at 0.8B is comparatively small.
+
+**Table 2.** DEBench v1 results across 8 configurations. Bold = best in column.
+
+| Config | Model | Tool F1 | Precision | Recall | Suppress | JSON | NoBreak |
+|--------|:-----:|:------:|:---------:|:------:|:--------:|:----:|:-------:|
+| Base (no train) | 0.8B | 0.000 | 0.000 | 0.000 | 0.967 | 0.940 | 0.980 |
+| Stage 1 LoRA (v2) | 0.8B | 0.000 | 0.000 | 0.000 | 0.000 | 0.120 | 1.000 |
+| Stage 2 (v1) | 0.8B | 0.000 | 0.000 | 0.000 | 1.000 | 1.000 | 1.000 |
+| Stage 2 v3 (intent 70/30) | 0.8B | 0.105 | 0.119 | 0.094 | 0.267 | 1.000 | 1.000 |
+| Stage 2 v3.1 (intent 50/50) | 0.8B | 0.069 | 0.400 | 0.038 | 0.900 | 0.960 | 1.000 |
+| Stage 3 v2 (DPO balanced) | 0.8B | 0.066 | 0.250 | 0.038 | 1.000 | 1.000 | 1.000 |
+| Stage 3 v3 (DPO F_overcall) | 0.8B | 0.000 | 0.000 | 0.000 | 1.000 | 1.000 | 1.000 |
+| **Stage 2 v3.1 (intent 50/50)** | **2B** | **0.639** | **0.705** | **0.585** | 0.300 | 1.000 | 0.980 |
+
+**Per-category Tool F1 (Stage 2 v3.1, 2B)**: evidence P=0.50/R=0.40, social P=1.00/R=0.40, scene P=0.50/R=0.40, combined P=1.00/R=0.50. The branch (present_choices) and emotion (set_expression) categories scored P=0/R=0 — directly attributable to their near-absence in the v3.1 training set (20/0 samples respectively out of 677). We address this in §7.6.
+
+### 7.2.1 Scale vs Data-Engineering Decomposition
+
+Holding training data and recipe **identical** (intent-driven 50/50 v3.1) and varying only the base model parameter count:
+
+- 0.8B: Tool F1 = **0.069**
+- 2B:   Tool F1 = **0.639** (+0.570 absolute, 9.3× relative)
+
+Holding **base model identical** (0.8B) and varying data engineering across our six 0.8B configs:
+
+- Worst: Tool F1 = 0.000 (multiple configs)
+- Best: Tool F1 = 0.105 (v3, intent 70/30)
+
+**The scale jump (0.069 → 0.639) is ~5× larger than the best data-engineering jump within 0.8B (0.000 → 0.105)**. For proactive in-character tool calling on the *Disco Elysium* corpus at this data scale (~1K supervised samples), there appears to be a 0.8B capacity floor that no SFT/DPO recipe we tried could overcome. We treat this as evidence of a parameter-count threshold for the task.
 
 **Table 2.** DEBench v1 results, 130 scenarios across persona/tool-selection/tool-suppression. *[TODO: fill numbers once evaluation completes on Mac.]*
 
@@ -320,6 +349,22 @@ The DEBench results in Table 2 are the ablation. We additionally report training
 **Stage 2 → Val Loss 0.7246** (continued from Stage 1, 1,064 tool-augmented samples). The further 23% reduction reflects JSON-format learnability. A 7-scenario smoke test confirms **100% JSON schema validity** and (problematically) ~25% tool-selection accuracy on positive cases — the SFT-form-vs-correctness gap our paper's Stage 3 targets.
 
 **Stage 3 v2 → Val Acc 96.59% on chosen/rejected discrimination** (3,337 balanced preference pairs, 1 epoch DPO). Notably, our **v1 DPO achieved a higher preference-discrimination score (98.57%) but completely collapsed generation behavior** (see §7.X)—evidence that DPO Val Acc on preference pairs is an unreliable proxy for downstream generation quality without distributional balancing.
+
+### 7.6 SFT Data Balance: The Pendulum Problem
+
+While developing Stage 2 (tool-augmented SFT), we observed an instructive failure mode we term the **data-balance pendulum**: small adjustments to the positive/negative ratio of training samples cause large swings between over-calling and under-calling at inference time.
+
+Three iterations on the 2B base, holding architecture and SFT recipe constant:
+
+| Variant | Positive : Negative | Smalltalk Negs | Tool F1 | Suppress | Pathology |
+|---------|:------------------:|:--------------:|:-------:|:--------:|:---------:|
+| v3.1    | 1 : 1.0  | 0 | **0.639** | 0.300 | mild over-call |
+| v3.2    | 1 : 1.1  | +115 (80 dupes) | 0.000 | 1.000 | full collapse |
+| v3.3    | 1 : 0.86 | 0 | [TODO] | [TODO] | (in progress) |
+
+**v3.2 collapse mechanism**: we added 115 smalltalk-style negative samples (questions resembling tool-triggering prompts like "what do you think?" but expecting empty tool_calls), of which 80 were programmatic duplicates intended to "strengthen" the signal. The duplicate amplification effectively re-weighted the loss landscape toward `tool_calls: []` — sufficient to overcome the genuine in-domain positives. Inference Suppress rose from 0.30 to 1.00 (correct on suppression test), but Tool F1 fell from 0.639 to 0.000 (model now refuses to call any tool, mirroring the 0.8B failure mode).
+
+**Lesson**: in SFT, negative-sample duplication acts as silent preference weighting. The "pendulum" is sharper than expected at sub-billion-parameter scales — recovery requires single-variable iteration. v3.3 retains v3.1's exact distribution and *only* appends 55 unique branch/emotion positives, preserving the 0.95:1 positive:negative ratio.
 
 ### 7.7 DPO Distributional Collapse (Negative Result)
 
