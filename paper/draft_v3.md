@@ -272,7 +272,7 @@ We evaluate **eight ablation configurations** spanning two model scales (0.8B an
 | Stage 3 v3 (DPO F_overcall) | 0.8B | 0.000 | 0.000 | 0.000 | 1.000 | 1.000 | 1.000 |
 | **Stage 2 v3.1 (intent 50/50)** | **2B** | **0.639** | **0.705** | **0.585** | 0.300 | 1.000 | 0.980 |
 
-**Per-category Tool F1 (Stage 2 v3.1, 2B)**: evidence P=0.50/R=0.40, social P=1.00/R=0.40, scene P=0.50/R=0.40, combined P=1.00/R=0.50. The branch (present_choices) and emotion (set_expression) categories scored P=0/R=0 — directly attributable to their near-absence in the v3.1 training set (20/0 samples respectively out of 677). We address this in §7.6.
+**Per-category Tool F1 (Stage 2 v3.1, 2B)**: evidence P=0.50/R=0.40, social P=1.00/R=0.40, scene P=0.50/R=0.40, combined P=1.00/R=0.50. The branch (present_choices) and emotion (set_expression) categories scored P=0/R=0 — directly attributable to their near-absence in the v3.1 training set (20/0 samples respectively out of 677). We attempted three principled data refinements to address these gaps (§7.6) but none recovered v3.1's overall F1; we therefore report v3.1 as our final system. Reproducibility was verified: a second DEBench run on the v3.1 checkpoint produces bit-identical results under greedy decoding.
 
 ### 7.2.1 Scale vs Data-Engineering Decomposition
 
@@ -350,21 +350,29 @@ The DEBench results in Table 2 are the ablation. We additionally report training
 
 **Stage 3 v2 → Val Acc 96.59% on chosen/rejected discrimination** (3,337 balanced preference pairs, 1 epoch DPO). Notably, our **v1 DPO achieved a higher preference-discrimination score (98.57%) but completely collapsed generation behavior** (see §7.X)—evidence that DPO Val Acc on preference pairs is an unreliable proxy for downstream generation quality without distributional balancing.
 
-### 7.6 SFT Data Balance: The Pendulum Problem
+### 7.6 SFT Data Engineering: Three Failed Improvements to v3.1
 
-While developing Stage 2 (tool-augmented SFT), we observed an instructive failure mode we term the **data-balance pendulum**: small adjustments to the positive/negative ratio of training samples cause large swings between over-calling and under-calling at inference time.
+After v3.1 (2B) achieved Tool F1 = 0.639 — our best system — we attempted three sequential data refinements to address its known weaknesses: branch F1 = 0, emotion F1 = 0, and Suppress = 0.30 (mild over-calling). Each refinement *appeared* methodologically sound but *empirically* degraded performance. We document all three failures verbatim as a methodological contribution.
 
-Three iterations on the 2B base, holding architecture and SFT recipe constant:
+**Table 4.** Stage 2 data refinement attempts on Qwen3.5-2B. v3.1 is reproduced bit-for-bit on greedy decoding; the failed refinements differ only in training-data composition.
 
-| Variant | Positive : Negative | Smalltalk Negs | Tool F1 | Suppress | Pathology |
-|---------|:------------------:|:--------------:|:-------:|:--------:|:---------:|
-| v3.1    | 1 : 1.0  | 0 | **0.639** | 0.300 | mild over-call |
-| v3.2    | 1 : 1.1  | +115 (80 dupes) | 0.000 | 1.000 | full collapse |
-| v3.3    | 1 : 0.86 | 0 | [TODO] | [TODO] | (in progress) |
+| Variant | Samples | Modification vs v3.1 | Tool F1 | Precision | Recall | Suppress |
+|---------|:------:|----------------------|:------:|:--------:|:------:|:--------:|
+| **v3.1** | 677 | (baseline) | **0.639** | 0.705 | 0.585 | 0.300 |
+| v3.2 | 870 | +54 branch + 40 emotion + 115 smalltalk (80 dupes) | 0.000 | 0.000 | 0.000 | 1.000 |
+| v3.3 | 732 | +55 unique branch + emotion (synthetic templates) | 0.102 | 0.500 | 0.057 | 0.900 |
+| v3.4 | 727 | +30 mined present_choices + 20 length-matched emotion | 0.578 | 0.800 | 0.453 | 0.733 |
 
-**v3.2 collapse mechanism**: we added 115 smalltalk-style negative samples (questions resembling tool-triggering prompts like "what do you think?" but expecting empty tool_calls), of which 80 were programmatic duplicates intended to "strengthen" the signal. The duplicate amplification effectively re-weighted the loss landscape toward `tool_calls: []` — sufficient to overcome the genuine in-domain positives. Inference Suppress rose from 0.30 to 1.00 (correct on suppression test), but Tool F1 fell from 0.639 to 0.000 (model now refuses to call any tool, mirroring the 0.8B failure mode).
+**v3.2 — Negative-sample duplication causes collapse.**
+We added 115 smalltalk-style negatives ("How's the weather?" → `tool_calls: []`) intending to fix v3.1's mild over-calling. 80 of these were programmatic duplicates of 35 unique templates, used to "strengthen" the negative signal. The duplication acted as **silent preference weighting**: the model effectively saw `tool_calls: []` 4-7 times per epoch as the dominant token sequence in its loss. Result: complete collapse to "never call tools" — Tool F1 → 0.000, Suppress → 1.000. Lesson: duplicating samples ≠ emphasizing the lesson; it shifts the loss-landscape minimum.
 
-**Lesson**: in SFT, negative-sample duplication acts as silent preference weighting. The "pendulum" is sharper than expected at sub-billion-parameter scales — recovery requires single-variable iteration. v3.3 retains v3.1's exact distribution and *only* appends 55 unique branch/emotion positives, preserving the 0.95:1 positive:negative ratio.
+**v3.3 — Synthetic samples shorter than real data cause distribution drift.**
+Removing v3.2's duplicates, we added 55 unique branch + emotion positives generated from templates. v3.1's real Kim responses average 13.9 words; our templates produced 6.5-word responses (47% of real length). The model learned: *short clean prompt → brief reply → minimal/no tools*. DEBench prompts are short and clean, so this pattern transferred catastrophically: Tool F1 fell to 0.102, Recall to 0.057. Lesson: synthetic data must match the real distribution along multiple axes (length, register, structural complexity), not just task semantics.
+
+**v3.4 — Length-matched additions still degrade due to cumulative distribution shift.**
+We replaced v3.3's synthetic branch with 30 *real-mined* `present_choices` from the corpus (lowered threshold to ≥1 player option) and 20 hand-written emotion samples averaging 29.8 words (matching real distribution length). Quality controls passed: average length 20.9 words (149% of real), 100% real or hand-written, no duplicates. Result: partial recovery (F1 = 0.578) but still worse than v3.1. Per-category analysis: Precision actually *improved* (0.71 → 0.80) but Recall regressed (0.59 → 0.45). The model became *more selective when calling, but called less often*. Branch and emotion remained at F1 = 0 (generated tool calls but with wrong arguments). Lesson: *any* perturbation of a near-saturated SFT distribution at sub-1B-trainable-parameter scale can degrade overall performance, even when perturbations are individually justified.
+
+**Synthesis.** All three refinements pursued separate, principled hypotheses (more negative signal → reduce over-calling; more diverse positives → cover unseen categories; length-matched real data → avoid distribution drift). None recovered v3.1's F1. This suggests v3.1 sits at a *local optimum* of the data-engineering hyperparameter space at this model scale — adjacent recipes are worse, and improvement likely requires either (a) significantly more model capacity (Qwen3.5-9B+), (b) RL methods with carefully balanced preference data (which our DPO ablations §7.7 also struggled to deliver), or (c) substantially more high-quality DE-style training data (10K+ samples). We choose **v3.1 as our reported final system** and treat the three failed iterations as a transparent record of attempted improvements.
 
 ### 7.7 DPO Distributional Collapse (Negative Result)
 

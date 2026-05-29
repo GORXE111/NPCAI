@@ -811,6 +811,52 @@ v3.2 数据加入：
 
 预期：F1 维持 ~0.6 + branch/emotion 非零
 
+---
+
+## 2026-05-29 / v3.3/v3.4 失败 + v3.1 复现验证 = v3.1 是 paper 最终系统
+
+### v3.3 (2B) DEBench: F1 0.102
+- 加 55 合成 branch+emotion 样本（不加 smalltalk）
+- Val Loss 0.6064（接近 v3.1）
+- **F1 暴跌至 0.102** —— 6.3× 退化
+
+**诊断**: 合成 Kim 回应 6.5 词 vs 真实 13.9 词（× 47%）。模型学到"短 clean prompt → 短回应 + 少工具"。DEBench prompts 也是短 clean → 触发该 pattern → 不调工具。
+
+### v3.4 (2B) DEBench: F1 0.578
+试图修 v3.3 length 问题：
+- 30 个 present_choices **从 DE 真实语料 mine**
+- 20 个 emotion 手写**长 form（avg 30 词）**
+- 总 727 (minimum perturbation)
+- Val 0.6032
+
+结果：**部分恢复但仍不如 v3.1**
+- Precision **升** 到 0.80（v3.1 是 0.71）
+- Recall **跌** 到 0.45（v3.1 是 0.59）
+- 模型更精准但更保守
+
+### v3.1 复现验证
+重跑 v3.1 LoRA on DEBench：**Bit-identical 结果** (F1 0.639, P 0.705, R 0.585)
+→ Greedy decoding 100% 确定性
+→ v3.1 不是侥幸，是真实水平
+
+### 总结：三次失败教训（写入论文 §7.6）
+| 尝试 | 修复方向 | 结果 | 教训 |
+|------|---------|:----:|------|
+| v3.2 | +115 smalltalk negs (80 dupes) | F1 0.000 | 重复样本 = 隐式偏置加权 |
+| v3.3 | +55 synthetic branch/emotion | F1 0.102 | 合成数据长度必须匹配真实分布 |
+| v3.4 | +30 mined + 20 long handwritten | F1 0.578 | 任何扰动都会动摇近饱和的 SFT 分布 |
+
+### 最终决定
+**v3.1 (F1 0.639) 是论文最终系统**。
+- branch/emotion F1=0 写进 §Limitations
+- 三次失败作为方法论 §7.6 内容
+- 未来工作：(a) 更大模型 (9B+) (b) RL 严格平衡偏好数据 (c) 10K+ DE 高质量数据
+
+### 下次注意
+1. **v3.1 在数据 hyperparameter 空间的局部最优点**，邻近配置都更差
+2. **在 sub-1B 可训参数（LoRA r=16）尺度上，扰动 = 风险** —— 哪怕方法合理
+3. **复现验证（同 LoRA 重跑）应该早做**，确认 baseline 数字可信
+
 ### 下次注意
 1. **任何对 LLM 输出有形式要求的训练**: SFT 前必须先验 1-2 条样本生成是否符合预期
 2. **Val Loss 是必要不充分条件** —— 必须配合定性 generation 测试
