@@ -862,3 +862,72 @@ v3.2 数据加入：
 2. **Val Loss 是必要不充分条件** —— 必须配合定性 generation 测试
 3. **DE 数据特别**: dialogue 字段不是纯对话，提取时要严格筛选
 4. **Stage 2 JSON schema 是更根本的解药**: 强制 dialogue/tool_calls 分离
+
+---
+
+## 2026-06-11 / 🎉 Stage 3 突破：KL-anchored DPO 击败 SFT continuation，F1 0.639→0.660 成为最终系统
+
+### 背景
+v3.1 (2B, F1 0.639) 是 Stage 2 最佳但有两个缺口（branch/emotion F1=0）+ 轻微过度调用（Suppress 0.30）。
+之前的修复（v3.2/v3.3/v3.4/v4.0）都是 **从 Stage 1 重训 Stage 2**，全部失败或不优。
+这次问题升级为：**能否在 v3.1 之上做 Stage 3 后训练原地精修，不破坏已学能力？**
+
+### 完整 Stage 3 实验矩阵（全部 2B，continue from v3.1 LoRA）
+
+| 系统 | 方法 | 数据 | Tool F1 | Suppress | 结果 |
+|------|------|:----:|:------:|:--------:|------|
+| v3.1 (base) | — | 677 | 0.639 | 0.300 | 参照 |
+| SFT-cont. v3.1.1 | 继续 SFT | 200 (45/55) | 0.073 | **0.967** | ❌ 过度抑制 collapse |
+| SFT-cont. v3.1.2 | 继续 SFT | 160 (81/19) | 0.107 | 0.167 | ❌ present_choices 霸屏 collapse |
+| **DPO v3.1.D** | **KL-anchored DPO** | **200 pairs** | **0.660** | **0.300** | ✅ **最终系统** |
+
+### 核心发现：精修近饱和策略时，DPO 严格优于继续 SFT
+
+**为什么 SFT continuation 必然失败**：
+- 模型已学会工具调用，新数据是"覆盖更新"而非"从零学"
+- v3.1.1：100 个 suppress 负样本主导 loss → 模型学到"默认 empty 最安全" → Suppress 0.30→0.967
+- v3.1.2：把比例翻到 81/19 pos，结果 present_choices (60/144=42%) 变成默认工具 → 在 evidence/social/scene 全乱调 (P=0.18)，JSON 掉到 0.88
+- **共同点**：LoRA r=16 (1.47M params) 尺度上，加新行为必然覆盖周边分布 = 灾难性遗忘
+- **唯一收获**：branch 变得可学（v3.1.1 P1.0/R0.4, v3.1.2 P1.0/R0.8）→ 证明缺口可修，但不是用 SFT
+
+**为什么 DPO 成功**：
+- **v3.1 LoRA 冻结作 reference model**，KL 项在每个 token 惩罚偏离 v3.1
+- KL penalty = 防灾难性遗忘的精确机制（SFT 没有这个约束）
+- 结果：F1 0.639→0.660，**所有旧类别原封不动或改善**（filler 1.0/1.0, combined 1.0/0.5, scene 0.50/0.40→0.60/0.60, Suppress 精确 0.300, JSON 1.0）
+- branch/emotion 仍 0：β=0.1 的 KL 约束保护旧能力的同时也压制了新信号过不了阈值——问题被隔离为"固定 KL 预算下的信号强度"，而非 SFT 的灾难性干扰
+
+### DPO 偏好对设计（关键：双向平衡）
+200 pairs，对标 v3.1 实测错误作 rejected：
+- 50 branch: chosen=present_choices, rejected=v3.1 实际错误 show_character
+- 40 emotion: chosen=set_expression, rejected=skill_check
+- 60 anchor 保护: chosen=v3.1 正确调用, rejected=empty（教"别漂到沉默"）
+- 50 suppress 保护: chosen=empty, rejected=错误工具（教"别过度调用"）
+- **双向平衡**：75% chosen 含工具 + 70% rejected 含工具 → 模型无法靠"工具=好"或"empty=好"走捷径，必须看上下文判断
+- 这正是 0.8B DPO 三次 collapse（净方向偏"少调工具"）的教训应用
+
+### 技术坑：2B 双模型 DPO 在 16GB 会 OOM
+- 标准 online DPO：policy + reference 双 2B float32 → MPS 20GB 上限爆掉（step 143/180 OOM）
+- **解法：offline DPO**
+  - Phase 1：只加载 reference，预计算所有 pair 的 logP(chosen)/logP(rejected) 存盘，释放 ref
+  - Phase 2：只训 policy，用缓存的 ref logprobs 算 DPO loss，峰值内存 ~10GB
+  - 这是 2B KL-anchored 偏好训练在消费硬件可行的实用配方
+- 超参：β=0.1, LR 5e-7, 1 epoch；Val Acc 0.15→0.65 温和移动（无 0.8B 那种 98% 然后 collapse）
+
+### 假设 vs 现实
+- **假设（前几轮）**: v3.1 是局部最优，SFT/DPO 都无法改进，是论文最终系统
+- **现实**: 错在"修复方法"。SFT continuation 确实修不了（灾难性遗忘），但 KL-anchored DPO 可以——F1 0.660 成为新最佳，且零遗忘
+- **打脸点**: 之前 0.8B 时代 DPO 三次 collapse 让我对 DPO 失去信心，差点放弃。但那是 0.8B 容量天花板 + 数据方向失衡双重问题，不是 DPO 本身的问题。2B + 双向平衡 + KL anchor 让 DPO 终于兑现承诺
+
+### 影响（论文叙事升级）
+- **旧叙事**: "v3.1 是最终系统，scale 是唯一决定因素，SFT/DPO 都无法改进"
+- **新叙事**: "(1) scale 是 0.8B→2B 的决定因素；(2) 精修近饱和策略时，post-training 目标函数是决定因素——continued SFT 灾难性遗忘，KL-anchored DPO 保留且改善"
+- 论文已更新：§7.2 主表加 4 行 2B 配置 + DPO final；§7.6 synthesis 引向 Stage 3；§7.7 完整重写为 "SFT Continuation Fails, KL-Anchored DPO Succeeds"；Abstract + Conclusion 同步
+- **新方法论 contribution**: SFT-continuation vs KL-anchored-DPO 对比 + 双向平衡 + offline-reference 配方
+
+### 下次注意
+1. **精修已收敛策略 → 用 KL-anchored DPO，不要用 continued SFT**：reference KL 是防遗忘的机制，SFT 没有
+2. **DPO 偏好对必须双向平衡**：chosen 和 rejected 两侧的"含工具/空"比例都要 near-parity，不能让模型走全局捷径
+3. **2B DPO 在 16GB → offline DPO（预计算 ref logprobs）**，否则双模型 OOM
+4. **不要因为早期 collapse 就放弃一个方法**：0.8B DPO 失败 ≠ 2B DPO 失败，要区分是容量问题还是方法问题
+5. **branch/emotion 仍 0 = 固定 KL 预算下信号太弱**：未来可试 β=0.05 放松 KL，或加大 branch/emotion pair 数量/对比强度（但要防其他类别回退）
+6. **continued SFT 的失败有诊断价值**：v3.1.1 过度抑制 + v3.1.2 过度某工具 = 同一灾难性遗忘的两个方向，写进论文很有说服力
