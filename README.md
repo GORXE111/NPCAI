@@ -1,7 +1,7 @@
 # Skill-as-Tool: Grounding Small Language Models in In-Character Decision Tools for Game NPCs
 
 [![Paper](https://img.shields.io/badge/Paper-v3_Draft-blue)](paper/draft_v3.md)
-[![Model](https://img.shields.io/badge/Base-Qwen3.5--0.8B-orange)](https://huggingface.co/Qwen/Qwen3.5-0.8B)
+[![Model](https://img.shields.io/badge/Base-Qwen3.5--0.8B%20%E2%86%92%202B-orange)](https://huggingface.co/Qwen/Qwen3.5-2B)
 [![Hardware](https://img.shields.io/badge/Trained%20on-Apple%20M4%2016GB-purple)](https://www.apple.com/mac-mini/)
 [![Unity](https://img.shields.io/badge/Unity-6000.3.11f1-green)](unity/)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](#license)
@@ -46,9 +46,11 @@ L1. Qwen3.5-0.8B + LoRA            Stage 1 (persona) + Stage 2 (tools) + Stage 3
 |-------|--------|-----------------|:-----:|--------|
 | **1: Persona-SFT** | LoRA r=16 | Kim's **voice** (form: speech style) | 1,127 cleaned Kim utterances from `output.json` | Val Loss **0.945** |
 | **2: Tool-aug SFT** | LoRA continued | Tool-call **format** (form: structured JSON) | 1,064 dialogue+tool_calls samples | Val Loss **0.725**, JSON 100% valid, tool selection ~25% |
-| **3: DPO** | preference optimization | Tool-call **correctness** (when to call, when not to) | 3,337 balanced preference pairs | _Currently training with corrected data balance_ |
+| **3: DPO** | KL-anchored preference optimization | Tool-call **correctness** (when to call, when not to) | 200 bidirectionally-balanced pairs (2B) | **Tool F1 0.639 → 0.680**, all learned categories held |
 
 **Why three stages?** SFT optimizes *form*; it teaches Kim how to *speak* and how to *format* tool calls. **Correctness** — knowing when to invoke `Empathy` vs `Logic`, when to refuse a tool entirely — requires preference signal, which we provide via DPO. See [paper/draft_v3.md §5](paper/draft_v3.md) for details.
+
+> **Note.** The headline work migrated from 0.8B to **Qwen3.5-2B** (0.8B hit a capacity floor at F1 = 0.11). A full 20-config Stage-3 refinement study — DPO vs SFT-continuation, synthetic-data injection, and the resulting Pareto frontier — is mapped in **[EXPERIMENTS.md](EXPERIMENTS.md)**.
 
 ---
 
@@ -91,12 +93,22 @@ Full JSON schema in `unity/Assets/Scripts/Agent/BuiltinToolHandlers.cs` and [pap
 ## Key Findings
 
 ### 0. Parameter-count threshold for NPC tool calling (the headline)
-At 0.8B, no SFT/DPO recipe across eight configurations exceeded Tool F1 = 0.11 on DEBench. Identical training data on Qwen3.5-2B yields **Tool F1 = 0.639 (6× improvement)**. The scale jump dwarfs all data-engineering improvements within 0.8B — there is a parameter-count floor for this task.
+At 0.8B, no SFT/DPO recipe across seven configurations exceeded Tool F1 = 0.11 on DEBench. Identical training data on Qwen3.5-2B yields **Tool F1 = 0.639 (6× improvement)**. The scale jump dwarfs all data-engineering improvements within 0.8B — there is a parameter-count floor for this task.
 
 | Config (identical data: v3.1 intent 50/50) | Model | Tool F1 |
 |--------|:----:|:------:|
 | Stage 2 | 0.8B | 0.069 |
 | **Stage 2** | **2B** | **0.639** |
+
+### 0b. A Pareto frontier for 2B tool-augmented NPC dialogue (the refinement result)
+A 20-configuration Stage-3 study (full map in **[EXPERIMENTS.md](EXPERIMENTS.md)**) yields two Pareto-**incomparable** systems — no recipe attains all tool categories at once:
+
+| System | Path | Tool F1 | Suppress | emotion | evidence | Best at |
+|--------|------|:------:|:--------:|:-------:|:--------:|---------|
+| **DPO v3.1.D** | v3.1 → KL-DPO | **0.680** | 0.30 | 0 | 0.75/0.60 | max F1, holds all learned categories |
+| **v5.0** | all-tool SFT + synthetic | 0.641 | 0.10 | **0.20** | **1.00/1.00** | only non-zero emotion, perfect evidence |
+
+Three mechanistic findings underpin it: **(a)** KL-anchored DPO refines a policy without forgetting, where continued SFT collapses it; **(b)** DPO *cannot* introduce a tool with ≈0 reference probability, nor repair a defect in its own reference — both are properties of `log(π/π_ref)`; **(c)** length-matched synthetic data *does* give positive feedback in a from-scratch SFT (emotion 0 → 0.20), but proactive-tool-calling SFT is **chaotic** in its data balance (empty ratios 44/47/54% → over-call / collapse / under-call, non-monotonically).
 
 ### 1. Data quality dominates quantity (replicated across 3 generations)
 | Setup | Samples | Val Loss |
